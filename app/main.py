@@ -15,6 +15,7 @@ import networkx as nx
 from sklearn.svm import SVC
 from sklearn.feature_selection import RFE
 from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 from captum.attr import IntegratedGradients
 from nilearn import datasets, plotting
@@ -28,7 +29,7 @@ device = torch.device("cuda:0" if use_cuda else "cpu")
 
 def get_data_from_abide(pipeline):
   downloads = f'abide/downloads/Outputs/{pipeline}/filt_global/rois_aal/'
-  pheno_file_path = 'data/Phenotypic_V1_0b_preprocessed1.csv'
+  pheno_file_path = 'abide/Phenotypic_V1_0b_preprocessed1.csv'
 
   with open(pheno_file_path, 'r') as pheno_file:
     pheno_list = pheno_file.readlines()
@@ -131,7 +132,8 @@ class Autoencoder(nn.Module):
     return rho * torch.log(rho / (rho_hat + eps)) + (1 - rho) * torch.log((1 - rho) / (1 - rho_hat + eps))
   
   def forward(self, x):
-    encoded = torch.relu(self.encoder(x))
+    # Use Sigmoid activation for encoded layer
+    encoded = torch.sigmoid(self.encoder(x))
     rho_hat = torch.mean(encoded, dim=0)
     kl_loss = self.kl_divergence(self.rho, rho_hat).sum()
     decoded = self.decoder(encoded)
@@ -374,6 +376,11 @@ def train_and_eval_model(data, labels_from_abide, pipeline, verbose=False, train
     # Extract features separately for train and test (prevents data leakage)
     train_feature_vecs, train_feature_indices = get_feature_vecs(train_data)
     test_feature_vecs, _ = get_feature_vecs(test_data)
+    
+    # Apply StandardScaler on training features and fit scaler
+    scaler = StandardScaler()
+    train_feature_vecs = scaler.fit_transform(train_feature_vecs)
+    test_feature_vecs = scaler.transform(test_feature_vecs)
     
     # Split training features into train and validation (increased to 15%)
     train_subidx, val_subidx = train_test_split(range(len(train_feature_vecs)), test_size=0.15, random_state=seed)
@@ -724,10 +731,10 @@ def train_and_eval_model(data, labels_from_abide, pipeline, verbose=False, train
     TP, FP, TN, FN = 0, 0, 0, 0
 
     for true_label, predicted_label in zip(true_labels, predicted_labels):
-      if true_label == predicted_label == 0:
-          TP += 1  # True Positive (correctly identified control)
-      elif true_label == predicted_label == 1:
-          TN += 1  # True Negative (correctly identified ASD)
+      if true_label == predicted_label == 1:
+          TP += 1  # True Positive (correctly identified ASD)
+      elif true_label == predicted_label == 0:
+          TN += 1  # True Negative (correctly identified control)
       elif true_label == 1 and predicted_label == 0:
           FN += 1  # False Negative
       elif true_label == 0 and predicted_label == 1:
@@ -831,7 +838,7 @@ if __name__ == "__main__":
 
   print(f"Total samples loaded: {len(data)}")
   print(f"Shape of raw data[0] (time points x ROIs): {data[0].shape}")
-
+  
   model, base_accuracy, train_dataloader, test_dataloader = train_and_eval_model(
     data, labels_from_abide, pipeline,
     verbose=verbose, train_model=train_model, save_model=save_model, rfe_step=RFE_step
